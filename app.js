@@ -18,14 +18,12 @@ if (!firebase.apps.length) {
 const db = firebase.firestore();
 
 function App() {
-  // Auth State
-  const [userRole, setUserRole] = useState('karyawan'); // 'admin' | 'karyawan'
+  // Auth State: 'karyawan' | 'stok_admin' | 'full_admin'
+  const [userRole, setUserRole] = useState('karyawan');
+  const [currentUsername, setCurrentUsername] = useState(''); // Menyimpan nama akun yang login
 
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [adminCreds, setAdminCreds] = useState(() => {
-    return JSON.parse(localStorage.getItem('adminCreds')) || { user: 'ekarmdni027', pass: 'cekidott' };
-  });
 
   // Cloud Database Data States
   const [products, setProducts] = useState([]);
@@ -62,6 +60,9 @@ function App() {
     price: '',
     stock: ''
   });
+
+  // Flag untuk mendeteksi apakah barang sudah ada (untuk pembatasan Rahmat & Sabila)
+  const [isExistingProductLocked, setIsExistingProductLocked] = useState(false);
 
   // Admin Edit Product State
   const [editingProductId, setEditingProductId] = useState(null);
@@ -135,7 +136,6 @@ function App() {
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
       
-      // Konfigurasi diperbarui agar mendukung barcode garis & kotak pemindai melebar
       const config = { 
         fps: 10, 
         qrbox: { width: 300, height: 150 }, 
@@ -174,19 +174,16 @@ function App() {
     setIsScanning(false);
   };
 
-  // --- HANDLE SCAN SUCCESS (FUNGSI BARU YANG DITAMBAHKAN) ---
+  // --- HANDLE SCAN SUCCESS ---
   const handleScanSuccess = (decodedText, target) => {
     if (target === 'admin_input') {
-      // Jika discan dari form restock/input barang admin
       handleRestockInputChange('barcode', decodedText);
       triggerToast("✅ Barcode berhasil terbaca: " + decodedText);
     } else if (target === 'kasir') {
-      // Jika discan dari tab kasir, cari produk berdasarkan barcode lalu masukkan ke keranjang
       const foundProduct = products.find(p => p.barcode === decodedText);
       if (foundProduct) {
         addToCart(foundProduct);
       } else {
-        // Jika tidak ditemukan di database, masukkan teks barcode ke kolom pencarian
         setSearchQuery(decodedText);
         triggerToast("⚠️ Barcode tidak ditemukan, dicari pada daftar barang.");
       }
@@ -232,7 +229,7 @@ function App() {
   const grandTotal = itemsTotal + Number(serviceFee || 0);
   const change = Number(payAmount || 0) - grandTotal;
 
-  // FUNGSI UNTUK RESET / MENGOSONGKAN FORM KASIR
+  // RESET FORM
   const resetKasirForm = () => {
     setCart([]);
     setServiceFee('');
@@ -241,7 +238,6 @@ function App() {
     setSearchQuery('');
   };
 
-  // FUNGSI UNTUK RESET / MENGOSONGKAN FORM RESTOCK
   const resetRestockForm = () => {
     setNewProduct({
       barcode: '',
@@ -250,27 +246,32 @@ function App() {
       price: '',
       stock: ''
     });
+    setIsExistingProductLocked(false);
   };
 
-  // --- LOGIN ADMIN HANDLER ---
+  // --- LOGIN ADMIN HANDLER BERDASARKAN USERNAME & PASSWORD ---
   const handleAdminLogin = (e) => {
     e.preventDefault();
-    if (loginForm.username === adminCreds.user && loginForm.password === adminCreds.pass) {
+    const { username, password } = loginForm;
+
+    if (username === 'ekarmdni027' && password === 'cekidott') {
       setIsAdminLoggedIn(true);
-      setUserRole('admin');
+      setUserRole('full_admin');
+      setCurrentUsername('ekarmdni027');
       setLoginForm({ username: '', password: '' });
+      triggerToast("🔓 Berhasil masuk sebagai Full Admin");
+    } else if (
+      (username.toUpperCase() === 'RAHMAT' && password === 'RAHMAT') || 
+      (username.toUpperCase() === 'SABILA' && password === 'SABILA')
+    ) {
+      setIsAdminLoggedIn(true);
+      setUserRole('stok_admin');
+      setCurrentUsername(username.toUpperCase());
+      setLoginForm({ username: '', password: '' });
+      triggerToast("🔓 Berhasil masuk sebagai Admin Stok (" + username.toUpperCase() + ")");
     } else {
       alert("Username atau Password salah!");
     }
-  };
-
-  const handleUpdateCreds = (e) => {
-    e.preventDefault();
-    const newCreds = { user: loginForm.username, pass: loginForm.password };
-    localStorage.setItem('adminCreds', JSON.stringify(newCreds));
-    setAdminCreds(newCreds);
-    setLoginForm({ username: '', password: '' });
-    alert("Akun Admin berhasil diubah!");
   };
 
   // --- HANDLE CHECKOUT ---
@@ -331,7 +332,7 @@ function App() {
     }
   };
 
-  // --- HANDLE DELETE TRANSACTION (ADMIN ONLY) ---
+  // --- HANDLE DELETE TRANSACTION (FULL ADMIN ONLY) ---
   const handleDeleteTransaction = async (id) => {
     if (confirm(`Apakah Anda yakin ingin menghapus riwayat transaksi ${id}?`)) {
       try {
@@ -368,7 +369,7 @@ function App() {
     }
   };
 
-  // --- HANDLE DELETE EXPENSE (ADMIN ONLY) ---
+  // --- HANDLE DELETE EXPENSE (FULL ADMIN ONLY) ---
   const handleDeleteExpense = async (id) => {
     if (confirm("Apakah Anda yakin ingin menghapus data pengeluaran ini?")) {
       try {
@@ -435,46 +436,68 @@ function App() {
     }
   };
 
-  // --- AUTOFILL PADA RESTOCK BERDASARKAN BARCODE ATAU NAMA (INISIATIF OTOMATIS) ---
+  // --- AUTOFILL PADA RESTOCK DENGAN PEMBATASAN UNTUK RAHMAT & SABILA ---
   const handleRestockInputChange = (field, value) => {
     if (field === 'barcode') {
       const found = products.find(p => p.barcode === value);
       if (found) {
-        setNewProduct(prev => ({
-          ...prev,
+        setNewProduct({
           barcode: value,
           name: found.name,
           buyPrice: found.buyPrice || '',
-          price: found.price || ''
-        }));
-        triggerToast("✨ Barcode sama terdeteksi!");
+          price: found.price || '',
+          stock: ''
+        });
+        if (userRole === 'stok_admin') {
+          setIsExistingProductLocked(true);
+          triggerToast("🔒 Barang sudah terdaftar! Nama & Harga dikunci. Anda hanya bisa menambah stok.");
+        } else {
+          triggerToast("✨ Barcode sama terdeteksi!");
+        }
       } else {
         setNewProduct(prev => ({ ...prev, barcode: value }));
+        if (userRole === 'stok_admin') {
+          setIsExistingProductLocked(false);
+        }
       }
     } else if (field === 'name') {
       const found = products.find(p => p.name.toLowerCase() === value.toLowerCase());
       if (found) {
-        setNewProduct(prev => ({
-          ...prev,
-          name: value,
+        setNewProduct({
           barcode: found.barcode || '',
+          name: value,
           buyPrice: found.buyPrice || '',
-          price: found.price || ''
-        }));
-        triggerToast("✨ Nama barang sama terdeteksi! Barcode & Harga otomatis terisi.");
+          price: found.price || '',
+          stock: ''
+        });
+        if (userRole === 'stok_admin') {
+          setIsExistingProductLocked(true);
+          triggerToast("🔒 Barang sudah terdaftar! Nama & Harga dikunci. Anda hanya bisa menambah stok.");
+        } else {
+          triggerToast("✨ Nama barang sama terdeteksi! Barcode & Harga otomatis terisi.");
+        }
       } else {
         setNewProduct(prev => ({ ...prev, name: value }));
+        if (userRole === 'stok_admin') {
+          setIsExistingProductLocked(false);
+        }
       }
     } else {
       setNewProduct(prev => ({ ...prev, [field]: value }));
     }
   };
 
-  // --- HANDLE SAVE PRODUCT ---
+  // --- HANDLE SAVE PRODUCT (FULL ADMIN & STOK ADMIN) ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
-    if (!newProduct.barcode || !newProduct.name || !newProduct.price) {
+    if (!newProduct.barcode || !newProduct.name || !newProduct.price || !newProduct.stock) {
       alert("Lengkapi data barang terlebih dahulu!");
+      return;
+    }
+
+    // Validasi pembatasan stok masuk hanya boleh angka positif (1, 2, 3, dst.) untuk akun RAHMAT & SABILA
+    if (userRole === 'stok_admin' && Number(newProduct.stock) <= 0) {
+      alert("Gagal menginput! Jumlah Stok Masuk hanya boleh angka positif (1, 2, 3, dan seterusnya).");
       return;
     }
 
@@ -486,13 +509,19 @@ function App() {
       const existingProduct = products.find(p => p.barcode === targetProductData.barcode);
 
       if (existingProduct) {
-        await db.collection('products').doc(existingProduct.id).update({
+        // Jika akun stok_admin (Rahmat/Sabila), pastikan harga/nama tidak berubah meskipun dimanipulasi
+        const updatePayload = userRole === 'stok_admin' ? {
+          stock: existingProduct.stock + Number(targetProductData.stock)
+        } : {
           name: targetProductData.name,
           buyPrice: Number(targetProductData.buyPrice),
           price: Number(targetProductData.price),
           stock: existingProduct.stock + Number(targetProductData.stock)
-        });
+        };
+
+        await db.collection('products').doc(existingProduct.id).update(updatePayload);
       } else {
+        // Barang baru bebas diinput oleh siapa pun yang memiliki akses restock
         await db.collection('products').add({
           barcode: targetProductData.barcode,
           name: targetProductData.name,
@@ -502,7 +531,7 @@ function App() {
         });
       }
 
-      triggerToast("✅ SUKSES! '" + targetProductData.name + "' telah tersimpan ke Database.");
+      triggerToast("✅ SUKSES! Stok berhasil ditambahkan ke Database.");
 
     } catch (error) {
       alert("Gagal menyimpan data ke Cloud: " + error.message);
@@ -574,7 +603,6 @@ function App() {
     return true;
   });
 
-  // Filter Pengeluaran Berdasarkan Filter Periode yang Sama
   const filteredExpenses = expenses.filter(e => {
     const expDate = new Date(e.date);
     const today = new Date();
@@ -607,7 +635,6 @@ function App() {
     return acc + itemModal;
   }, 0);
 
-  // Laba Bersih = (Total Omset - Modal Barang) dikurangi Total Pengeluaran Operasional
   const totalLabaBersih = (totalOmset - totalModalBarang) - totalPengeluaran;
 
   const filteredProducts = products.filter(p => 
@@ -615,12 +642,11 @@ function App() {
     p.barcode.includes(searchQuery)
   );
 
-  // --- FUNGSI DOWNLOAD LAPORAN KEUANGAN KE FILE PDF ---
+  // --- DOWNLOAD PDF REPORT ---
   const downloadPDFReport = () => {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
 
-    // Judul Dokumen
     doc.setFont("helvetica", "bold");
     doc.setFontSize(16);
     doc.text("LAPORAN KEUANGAN BENGKEL MOTOR", 14, 15);
@@ -636,7 +662,6 @@ function App() {
     doc.text(periodeText, 14, 22);
     doc.text(`Dicetak Pada: ${new Date().toLocaleString('id-ID')}`, 14, 28);
 
-    // Ringkasan Keuangan
     doc.setFont("helvetica", "bold");
     doc.text("Ringkasan Eksekutif:", 14, 38);
     
@@ -658,7 +683,6 @@ function App() {
 
     let currentY = doc.lastAutoTable.finalY + 10;
 
-    // Tabel Transaksi Masuk
     doc.setFont("helvetica", "bold");
     doc.text("Rincian Transaksi:", 14, currentY);
 
@@ -681,7 +705,6 @@ function App() {
 
     currentY = doc.lastAutoTable.finalY + 10;
 
-    // Tabel Pengeluaran
     if (currentY > 250) {
       doc.addPage();
       currentY = 20;
@@ -707,7 +730,6 @@ function App() {
       styles: { fontSize: 8 }
     });
 
-    // Simpan File PDF
     doc.save(`Laporan-Keuangan-${reportFilterType}-${Date.now()}.pdf`);
     triggerToast("📄 Laporan Keuangan berhasil diunduh dalam format PDF!");
   };
@@ -721,30 +743,57 @@ function App() {
           <h1 className="font-bold text-lg">POS Bengkel Motor</h1>
         </div>
         
-        {/* Role Switcher */}
+        {/* Role Switcher / Status */}
         <div className="flex items-center bg-slate-700 rounded-lg p-1">
-          <button 
-            onClick={() => { setUserRole('karyawan'); setActiveTab('kasir'); }}
-            className={`px-3 py-1 rounded-md text-xs font-semibold transition ${userRole === 'karyawan' ? 'bg-yellow-500 text-slate-900' : 'text-gray-300'}`}>
-            Karyawan
-          </button>
-          
-          {userRole === 'admin' ? (
-            <button onClick={() => { setIsAdminLoggedIn(false); setUserRole('karyawan'); }} className="px-3 py-1 rounded-md text-xs font-semibold transition bg-red-600 text-white ml-1">Logout Admin</button>
+          {userRole !== 'karyawan' ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold px-2 py-1 text-yellow-400">
+                {userRole === 'full_admin' ? 'Full Admin' : `Admin Stok (${currentUsername})`}
+              </span>
+              <button 
+                onClick={() => { setIsAdminLoggedIn(false); setUserRole('karyawan'); setCurrentUsername(''); setActiveTab('kasir'); }} 
+                className="px-3 py-1 rounded-md text-xs font-semibold transition bg-red-600 text-white">
+                Logout
+              </button>
+            </div>
           ) : (
-            <button onClick={() => setIsAdminLoggedIn('prompt')} className="px-3 py-1 rounded-md text-xs font-semibold transition text-gray-300 ml-1">Admin</button>
+            <button 
+              onClick={() => setIsAdminLoggedIn('prompt')} 
+              className="px-3 py-1 rounded-md text-xs font-semibold transition text-gray-300 hover:text-white">
+              Login Admin
+            </button>
           )}
         </div>
       </header>
 
+      {/* Modal Prompt Login Admin */}
       {isAdminLoggedIn === 'prompt' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <form onSubmit={handleAdminLogin} className="bg-white p-6 rounded shadow w-full max-w-sm space-y-3">
-            <h2 className="font-bold text-gray-800">Verifikasi Admin</h2>
-            <input type="text" placeholder="Username" className="w-full border p-2 text-sm rounded" onChange={e => setLoginForm({...loginForm, username: e.target.value})} required/>
-            <input type="password" placeholder="Password" className="w-full border p-2 text-sm rounded" onChange={e => setLoginForm({...loginForm, password: e.target.value})} required/>
+            <h2 className="font-bold text-gray-800">Verifikasi Login Admin</h2>
+            <input 
+              type="text" 
+              placeholder="Username" 
+              className="w-full border p-2 text-sm rounded" 
+              value={loginForm.username}
+              onChange={e => setLoginForm({...loginForm, username: e.target.value})} 
+              required
+            />
+            <input 
+              type="password" 
+              placeholder="Password" 
+              className="w-full border p-2 text-sm rounded" 
+              value={loginForm.password}
+              onChange={e => setLoginForm({...loginForm, password: e.target.value})} 
+              required
+            />
             <button className="w-full bg-blue-600 text-white p-2 rounded text-sm font-bold">Masuk</button>
-            <button type="button" onClick={() => setIsAdminLoggedIn(false)} className="w-full text-gray-500 text-sm">Batal</button>
+            <button 
+              type="button" 
+              onClick={() => setIsAdminLoggedIn(false)} 
+              className="w-full text-gray-500 text-sm">
+              Batal
+            </button>
           </form>
         </div>
       )}
@@ -771,7 +820,9 @@ function App() {
           className={`flex items-center gap-1 py-1.5 px-3 rounded-lg transition ${activeTab === 'laporan' ? 'bg-blue-50 text-blue-600 font-bold border border-blue-200' : ''}`}>
           <i data-lucide="file-text" className="w-4 h-4"></i> Laporan Keuangan
         </button>
-        {userRole === 'admin' && (
+        
+        {/* Tombol Restock hanya untuk Full Admin & Admin Stok */}
+        {(userRole === 'full_admin' || userRole === 'stok_admin') && (
           <button 
             onClick={() => setActiveTab('input_barang')} 
             className={`flex items-center gap-1 py-1.5 px-3 rounded-lg transition ${activeTab === 'input_barang' ? 'bg-blue-50 text-blue-600 font-bold border border-blue-200' : ''}`}>
@@ -972,10 +1023,10 @@ function App() {
                   <tr>
                     <th className="p-2.5">Barcode</th>
                     <th className="p-2.5">Nama Barang</th>
-                    {userRole === 'admin' && <th className="p-2.5">Harga Modal</th>}
+                    <th className="p-2.5">Harga Modal</th>
                     <th className="p-2.5">Harga Jual</th>
                     <th className="p-2.5">Sisa Stok</th>
-                    {userRole === 'admin' && <th className="p-2.5 text-center">Aksi</th>}
+                    {userRole === 'full_admin' && <th className="p-2.5 text-center">Aksi</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -983,7 +1034,7 @@ function App() {
                     <tr key={p.id} className="hover:bg-slate-50">
                       <td className="p-2.5 font-mono text-gray-500">{p.barcode}</td>
                       
-                      {editingProductId === p.id ? (
+                      {editingProductId === p.id && userRole === 'full_admin' ? (
                         <>
                           <td className="p-2.5">
                             <input 
@@ -993,16 +1044,14 @@ function App() {
                               className="border rounded p-1 w-full text-xs"
                             />
                           </td>
-                          {userRole === 'admin' && (
-                            <td className="p-2.5">
-                              <input 
-                                type="number" 
-                                value={editProductData.buyPrice} 
-                                onChange={(e) => setEditProductData({ ...editProductData, buyPrice: e.target.value })}
-                                className="border rounded p-1 w-20 text-xs"
-                              />
-                            </td>
-                          )}
+                          <td className="p-2.5">
+                            <input 
+                              type="number" 
+                              value={editProductData.buyPrice} 
+                              onChange={(e) => setEditProductData({ ...editProductData, buyPrice: e.target.value })}
+                              className="border rounded p-1 w-20 text-xs"
+                            />
+                          </td>
                           <td className="p-2.5">
                             <input 
                               type="number" 
@@ -1029,14 +1078,14 @@ function App() {
                       ) : (
                         <>
                           <td className="p-2.5 font-semibold text-gray-800">{p.name}</td>
-                          {userRole === 'admin' && <td className="p-2.5 text-gray-500">Rp {(p.buyPrice || 0).toLocaleString()}</td>}
+                          <td className="p-2.5 text-gray-500">Rp {(p.buyPrice || 0).toLocaleString()}</td>
                           <td className="p-2.5 font-bold">Rp {p.price.toLocaleString()}</td>
                           <td className="p-2.5">
                             <span className={`px-2 py-1 rounded text-xs font-bold ${p.stock < 5 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
                               {p.stock} Pcs
                             </span>
                           </td>
-                          {userRole === 'admin' && (
+                          {userRole === 'full_admin' && (
                             <td className="p-2.5 text-center">
                               <div className="flex justify-center gap-1">
                                 <button onClick={() => handleStartEdit(p)} className="bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded text-[10px] font-bold">Edit</button>
@@ -1054,10 +1103,9 @@ function App() {
           </div>
         )}
 
-        {/* TAB: PENGELUARAN (BISA DIAKSES KARYAWAN & ADMIN) */}
+        {/* TAB: PENGELUARAN */}
         {activeTab === 'pengeluaran' && (
           <div className="grid md:grid-cols-3 gap-4">
-            {/* Form Input Pengeluaran */}
             <div className="bg-white p-4 rounded-xl shadow-sm border md:col-span-1">
               <h2 className="font-bold text-gray-800 mb-3 text-sm flex items-center gap-1.5">
                 <i data-lucide="wallet" className="w-4 h-4 text-red-500"></i> Catat Pengeluaran
@@ -1103,7 +1151,6 @@ function App() {
               </form>
             </div>
 
-            {/* Riwayat Pengeluaran */}
             <div className="bg-white p-4 rounded-xl shadow-sm border md:col-span-2">
               <div className="flex justify-between items-center mb-3">
                 <h2 className="font-bold text-gray-800 text-sm">Riwayat Catatan Pengeluaran</h2>
@@ -1124,7 +1171,7 @@ function App() {
                         <div>
                           <p className="font-extrabold text-red-600">- Rp {exp.amount.toLocaleString()}</p>
                         </div>
-                        {userRole === 'admin' && (
+                        {userRole === 'full_admin' && (
                           <button 
                             onClick={() => handleDeleteExpense(exp.id)}
                             className="bg-red-100 hover:bg-red-200 text-red-600 p-1.5 rounded transition" title="Hapus">
@@ -1140,12 +1187,13 @@ function App() {
           </div>
         )}
 
-        {/* TAB: INPUT / RESTOCK BARANG (ADMIN ONLY) */}
-        {activeTab === 'input_barang' && userRole === 'admin' && (
+        {/* TAB: INPUT / RESTOCK BARANG (FULL ADMIN & STOK ADMIN) */}
+        {activeTab === 'input_barang' && (userRole === 'full_admin' || userRole === 'stok_admin') && (
           <div className="bg-white p-5 rounded-xl shadow-sm border max-w-lg mx-auto">
             <h2 className="font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2">
               <i data-lucide="plus-circle" className="text-blue-600"></i>
-              Form Restock / Input Barang Masuk
+              Form Restock / Input Barang Masuk 
+              {userRole === 'stok_admin' && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">({currentUsername})</span>}
             </h2>
 
             <form onSubmit={handleSaveProduct} className="space-y-3.5">
@@ -1176,9 +1224,13 @@ function App() {
                   placeholder="Contoh: Oli Yamalube Matic 0.8L" 
                   value={newProduct.name}
                   onChange={(e) => handleRestockInputChange('name', e.target.value)}
-                  className="w-full border rounded-lg p-2 text-sm bg-gray-50 focus:bg-white"
+                  readOnly={userRole === 'stok_admin' && isExistingProductLocked}
+                  className={`w-full border rounded-lg p-2 text-sm ${userRole === 'stok_admin' && isExistingProductLocked ? 'bg-gray-200 text-gray-600 cursor-not-allowed font-semibold' : 'bg-gray-50 focus:bg-white'}`}
                   required
                 />
+                {userRole === 'stok_admin' && isExistingProductLocked && (
+                  <p className="text-[10px] text-amber-600 mt-0.5">🔒 Nama barang dikunci (sudah ditentukan di sistem).</p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1189,7 +1241,8 @@ function App() {
                     placeholder="0" 
                     value={newProduct.buyPrice}
                     onChange={(e) => handleRestockInputChange('buyPrice', e.target.value)}
-                    className="w-full border rounded-lg p-2 text-sm bg-gray-50 focus:bg-white"
+                    readOnly={userRole === 'stok_admin' && isExistingProductLocked}
+                    className={`w-full border rounded-lg p-2 text-sm ${userRole === 'stok_admin' && isExistingProductLocked ? 'bg-gray-200 text-gray-600 cursor-not-allowed font-semibold' : 'bg-gray-50 focus:bg-white'}`}
                     required
                   />
                 </div>
@@ -1200,23 +1253,28 @@ function App() {
                     placeholder="0" 
                     value={newProduct.price}
                     onChange={(e) => handleRestockInputChange('price', e.target.value)}
-                    className="w-full border rounded-lg p-2 text-sm bg-gray-50 focus:bg-white"
+                    readOnly={userRole === 'stok_admin' && isExistingProductLocked}
+                    className={`w-full border rounded-lg p-2 text-sm ${userRole === 'stok_admin' && isExistingProductLocked ? 'bg-gray-200 text-gray-600 cursor-not-allowed font-semibold' : 'bg-gray-50 focus:bg-white'}`}
                     required
                   />
                 </div>
               </div>
+              {userRole === 'stok_admin' && isExistingProductLocked && (
+                <p className="text-[10px] text-amber-600">🔒 Harga modal & harga jual dikunci untuk akun Rahmat/Sabila.</p>
+              )}
 
               <div>
-                <label className="text-xs font-bold text-gray-700 block mb-1">Jumlah Stok Masuk (Pcs)</label>
+                <label className="text-xs font-bold text-gray-700 block mb-1">Jumlah Stok Masuk (Pcs) <span className="text-emerald-600 font-extrabold">(Boleh Diubah)</span></label>
                 <input 
                   type="number" 
+                  min="1"
                   placeholder="0" 
                   value={newProduct.stock}
                   onChange={(e) => handleRestockInputChange('stock', e.target.value)}
-                  className="w-full border rounded-lg p-2 text-sm bg-gray-50 focus:bg-white"
+                  className="w-full border rounded-lg p-2 text-sm bg-gray-50 focus:bg-white font-bold text-emerald-700"
                   required
                 />
-                <p className="text-[10px] text-gray-400 mt-1">*Jika barcode atau nama barang sudah terdaftar, harga modal dan harga jual akan terisi otomatis.</p>
+                <p className="text-[10px] text-gray-400 mt-1">*Masukkan jumlah stok tambahan yang masuk.</p>
               </div>
 
               <button 
@@ -1228,10 +1286,9 @@ function App() {
           </div>
         )}
 
-        {/* TAB: LAPORAN KEUANGAN (BISA DIAKSES KARYAWAN & ADMIN) */}
+        {/* TAB: LAPORAN KEUANGAN */}
         {activeTab === 'laporan' && (
           <div className="space-y-4">
-            {/* Filter Laporan Options & Tombol Download PDF */}
             <div className="bg-white p-4 rounded-xl shadow-sm border space-y-3">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                 <h3 className="font-bold text-gray-800 text-sm">Filter Periode Laporan Keuangan</h3>
@@ -1290,7 +1347,7 @@ function App() {
             </div>
 
             {/* Executive Summary Cards */}
-            <div className={`grid ${userRole === 'admin' ? 'grid-cols-4' : 'grid-cols-2'} gap-3`}>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-white p-3.5 rounded-xl border shadow-sm">
                 <p className="text-[10px] text-gray-500 font-bold uppercase">Total Omset</p>
                 <p className="text-sm font-extrabold text-blue-600">Rp {totalOmset.toLocaleString()}</p>
@@ -1299,18 +1356,14 @@ function App() {
                 <p className="text-[10px] text-gray-500 font-bold uppercase">Pendapatan Jasa</p>
                 <p className="text-sm font-extrabold text-indigo-600">Rp {totalJasa.toLocaleString()}</p>
               </div>
-              {userRole === 'admin' && (
-                <>
-                  <div className="bg-white p-3.5 rounded-xl border shadow-sm">
-                    <p className="text-[10px] text-gray-500 font-bold uppercase">Total Pengeluaran</p>
-                    <p className="text-sm font-extrabold text-red-600">Rp {totalPengeluaran.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-white p-3.5 rounded-xl border shadow-sm">
-                    <p className="text-[10px] text-gray-500 font-bold uppercase">Est. Laba Bersih</p>
-                    <p className="text-sm font-extrabold text-emerald-600">Rp {totalLabaBersih.toLocaleString()}</p>
-                  </div>
-                </>
-              )}
+              <div className="bg-white p-3.5 rounded-xl border shadow-sm">
+                <p className="text-[10px] text-gray-500 font-bold uppercase">Total Pengeluaran</p>
+                <p className="text-sm font-extrabold text-red-600">Rp {totalPengeluaran.toLocaleString()}</p>
+              </div>
+              <div className="bg-white p-3.5 rounded-xl border shadow-sm">
+                <p className="text-[10px] text-gray-500 font-bold uppercase">Est. Laba Bersih</p>
+                <p className="text-sm font-extrabold text-emerald-600">Rp {totalLabaBersih.toLocaleString()}</p>
+              </div>
             </div>
 
             {/* Transaction History Log */}
@@ -1347,7 +1400,7 @@ function App() {
                           <i data-lucide="printer" className="w-3.5 h-3.5"></i> Cetak Ulang
                         </button>
                         
-                        {userRole === 'admin' && (
+                        {userRole === 'full_admin' && (
                           <button 
                             onClick={() => handleDeleteTransaction(t.id)}
                             className="bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition" title="Hapus Transaksi">
