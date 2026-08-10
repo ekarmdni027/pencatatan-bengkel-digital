@@ -1229,7 +1229,7 @@ function App() {
                   required
                 />
                 {userRole === 'stok_admin' && isExistingProductLocked && (
-                  <p className="text-[10px] text-amber-600 mt-0.5">🔒 Nama barang dikunci (sudah ditentukan di sistem).</p>
+                  <p className="text-[10px] text-amber-600 mt-0.5"></p>
                 )}
               </div>
 
@@ -1260,11 +1260,11 @@ function App() {
                 </div>
               </div>
               {userRole === 'stok_admin' && isExistingProductLocked && (
-                <p className="text-[10px] text-amber-600">🔒 Harga modal & harga jual dikunci untuk akun Rahmat/Sabila.</p>
+                <p className="text-[10px] text-amber-600"></p>
               )}
 
               <div>
-                <label className="text-xs font-bold text-gray-700 block mb-1">Jumlah Stok Masuk (Pcs) <span className="text-emerald-600 font-extrabold">(Boleh Diubah)</span></label>
+                <label className="text-xs font-bold text-gray-700 block mb-1">Jumlah Stok Masuk (Pcs) <span className="text-emerald-600 font-extrabold"></span></label>
                 <input 
                   type="number" 
                   min="1"
